@@ -1,85 +1,75 @@
-````markdown
-# GEE Toolkit for Reservoir Water Quality Monitoring
+# A Google Earth Engine Toolkit for Reservoir Water Quality Monitoring
 
-An open-source, no-code Google Earth Engine toolkit paired with a Python ML pipeline for end-to-end reservoir water quality assessment.
+## Overview
 
-## Features
+This repository contains:
 
-- **No-code GEE interface**: Atmospheric correction, cloud masking, and pixel‑wise time-series extraction.
-- **Empirical indices**: Compute NDVI, NDWI, LST, TSM, SPM, NDSSI, TSS, Chl‑a, turbidity, CDOM, and cyanobacteria without coding.
-- **Point-based extraction**: Align in situ CTD measurements with Landsat 8/9 & Sentinel‑2 pixels for local calibration.
-- **Python ML pipeline**: Feature selection (RFE, SelectKBest), RandomizedSearchCV tuning, and ensemble models (RF, XGBoost, CatBoost, MLP, stacking, voting).
-- **Proven performance**: Achieves R² of 0.70–0.84 for chlorophyll‑a, turbidity, and water surface temperature (WST).
+* A **no-code Google Earth Engine (GEE) toolkit** for computing and visualizing water-quality indices.
+* A **Python machine learning pipeline** for local calibration and prediction of chlorophyll‑a, turbidity, and water surface temperature (WST).
 
-## Getting Started
+The toolkit automates:
 
-### Prerequisites
+* Atmospheric correction and cloud masking of Landsat 8/9 & Sentinel‑2 imagery
+* Pixel-wise time-series extraction and regional clipping
+* Export of GeoTIFF composites to Google Drive
 
-- Python 3.7+
-- [Google Earth Engine Python API](https://developers.google.com/earth-engine/python_install)
-- Git
+The ML pipeline provides:
 
-### Installation
+* Point-based extraction of in situ CTD measurements aligned with satellite pixels
+* Feature selection (RFE, SelectKBest) and hyperparameter tuning via RandomizedSearchCV
+* Ensemble modeling (Random Forest, XGBoost, CatBoost, MLP, stacking, voting)
 
-```bash
-# Clone the repo
-git clone https://github.com/<your-username>/GEE_Toolkit.git
-cd GEE_Toolkit
+## Highlights
 
-# Setup Python environment
-python3 -m venv venv
-source venv/bin/activate
+* No-code GEE toolkit integrates satellite and in situ data for water quality models.
+* Automates atmospheric correction, cloud masking, and time-series extraction.
+* Compute empirical indices (NDVI, NDWI, LST, TSM, SPM, Chl‑a, turbidity, CDOM) in GEE.
+* Point-based extraction aligns CTD data with Landsat 8/9 & Sentinel-2 pixels.
+* ML models achieved R² of 0.70–0.84 for chlorophyll‑a, turbidity, and WST.
 
-# Install dependencies
-pip install -r ml_pipeline/requirements.txt
-````
+
+## Installation
+
+1. Clone the repository:
+
+   ```bash
+   git clone https://github.com/<your-username>/GEE_Toolkit.git
+   cd GEE_Toolkit
+   ```
+2. Create a Python environment and install dependencies:
+
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install -r ml_pipeline/requirements.txt
+   ```
+3. Configure GEE credentials by following the [GEE Python API setup guide](https://developers.google.com/earth-engine/python_install).
 
 ## Usage
 
-### 1. Launch the GEE Toolkit UI
+### 1. Google Earth Engine Toolkit
 
-```bash
-cd gee_toolkit
-python3 -m http.server 8000
-```
+* Open `gee_toolkit/index.html` in your web browser (hosted via local server or GitHub Pages).
+* Select date range, indices, and region of interest.
+* Export processed layers to Google Drive.
 
-Open your browser at `http://localhost:8000`, select your region, date range, and indices, then export composites to Google Drive.
-
-### 2. Run the Python ML Pipeline
+### 2. Python ML Pipeline
 
 ```bash
 cd ml_pipeline
 python run_pipeline.py \
-  --ctd ../data/ctd_samples.csv \
-  --satellite ../data/satellite_features.csv \
-  --output ../results/model_performance.csv
+  --ctd data/ctd_samples.csv \
+  --satellite-exports data/satellite_features.csv \
+  --output results/model_performance.csv
 ```
 
-Outputs include model metrics (R², MAE, MSE, MAPE) and feature importance summaries.
-
-## Repository Structure
-
-```
-GEE_Toolkit/
-├── gee_toolkit/          # No-code GEE UI and scripts
-├── ml_pipeline/          # Python scripts for data merging & ML
-├── data/                 # Sample CTD and satellite export files
-├── results/              # Model performance outputs
-├── notebooks/            # Jupyter notebooks for demos
-└── README.md             # Project overview and instructions
-```
+* **run\_pipeline.py** performs data merging, feature selection, hyperparameter tuning, and model evaluation.
+* Results including R², MAE, MSE, and MAPE are saved in `results/`.
 
 ## Contributing
 
-Feel free to open issues or submit pull requests for enhancements and bug fixes.
+Contributions are welcome! Please open issues or submit pull requests with enhancements or bug fixes.
 
 ## License
 
-This project is licensed under the MIT License.
-
----
-
-*Developed by Amirreza Shahmiri*
-
-```
-```
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
