@@ -22,8 +22,8 @@ sns.set(style='whitegrid')
 np.random.seed(42)
 
 # Define file paths (update these as per your local setup)
-input_file = r"C:\Users\DFMRendering\Desktop\Microplastic\GEE_Dhaygah_Dam_300m\Calibration\Chl_a_Landsat\Data analysis and FS\selected_features.csv"
-output_dir = r"C:\Users\DFMRendering\Desktop\Microplastic\GEE_Dhaygah_Dam_300m\Calibration\Chl_a_Landsat\Modeling"
+input_file = r":("
+output_dir = r":)"
 
 # Create output directory if it doesn’t exist
 os.makedirs(output_dir, exist_ok=True)
