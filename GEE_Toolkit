@@ -1,0 +1,741 @@
+/********************************************
+ * Google Earth Engine Modular Toolkit for
+ * Satellite Data Processing + Time Series
+ ********************************************/
+
+// IMPORTANT: Ensure that 'damPolygon' is defined globally before running the code.
+// Example:
+// var damPolygon = ee.Geometry.Polygon([...]);
+
+/**
+ * Applies scale factors to Landsat 8 and 9 images for optical and thermal bands.
+ * @param {ee.Image} image - Input Landsat image from LC08/C02/T1_L2 or LC09/C02/T1_L2.
+ * @return {ee.Image} - Scaled image with optical and thermal bands in Celsius.
+ */
+function applyScaleFactors(image) {
+  var opticalBands = image.select('SR_B.').multiply(0.0000275).add(-0.2); // Scale surface reflectance bands
+  var thermalBand = image
+    .select('ST_B10')
+    .multiply(0.00341802)
+    .add(149.0)
+    .subtract(273.15); // Corrected: Subtract 273.15 to convert from Kelvin to Celsius
+  return image
+    .addBands(opticalBands, null, true)
+    .addBands(thermalBand, null, true);
+}
+
+/**
+ * Masks clouds, cloud shadows, and cirrus in Landsat 8 and 9 images using QA_PIXEL band.
+ * @param {ee.Image} image - Input Landsat image with QA_PIXEL band.
+ * @return {ee.Image} - Image with clouds masked out.
+ */
+function maskCloudsLandsat(image) {
+  var qa = image.select('QA_PIXEL');
+  var cloudShadowBitmask = 1 << 4; // Bit 4: Cloud shadow
+  var cloudBitmask = 1 << 3;       // Bit 3: Cloud
+  var cirrusBitmask = 1 << 2;      // Bit 2: Cirrus
+  var mask = qa
+    .bitwiseAnd(cloudShadowBitmask)
+    .eq(0)
+    .and(qa.bitwiseAnd(cloudBitmask).eq(0))
+    .and(qa.bitwiseAnd(cirrusBitmask).eq(0));
+  return image.updateMask(mask);
+}
+
+/**
+ * Calculates the Normalized Difference Vegetation Index (NDVI) for an image.
+ * @param {ee.Image} image - Input image with SR_B5 (NIR) and SR_B4 (Red) bands.
+ * @return {ee.Image} - Image with NDVI_Landsat band added.
+ */
+function calculateNDVI(image) {
+  var ndvi = image
+    .normalizedDifference(['SR_B5', 'SR_B4'])
+    .rename('NDVI_Landsat')
+    .toFloat();
+  return image.addBands(ndvi);
+}
+
+/**
+ * Returns a function to calculate the Normalized Difference Water Index (NDWI) based on the sensor.
+ * @param {string} sensor - Sensor type ('Landsat' or 'Sentinel-2').
+ * @return {function(ee.Image): ee.Image} - Function that takes an image and returns it with NDWI added.
+ */
+function calculateNDWI(sensor) {
+  return function(image) {
+    var ndwi;
+    if (sensor === 'Landsat') {
+      ndwi = image
+        .normalizedDifference(['SR_B3', 'SR_B5']) // Green (B3) - NIR (B5) for Landsat 8/9
+        .rename('NDWI_Landsat')
+        .toFloat();
+    } else if (sensor === 'Sentinel-2') {
+      ndwi = image
+        .normalizedDifference(['B3', 'B8']) // Green (B3) - NIR (B8) for Sentinel-2
+        .rename('NDWI_S2')
+        .toFloat();
+    }
+    return image.addBands(ndwi);
+  };
+}
+
+/**
+ * Calculates Surface Temperature (SST) using the thermal band with a correction factor.
+ * @param {ee.Image} image - Input image with ST_B10 (thermal) band.
+ * @return {ee.Image} - Image with LST_Landsat band added in Celsius.
+ */
+function calculateSST(image) {
+  var sst = image
+    .select('ST_B10')
+    .multiply(0.7) // example correction factor
+    .rename('LST_Landsat')
+    .toFloat();
+  return image.addBands(sst);
+}
+
+/**
+ * Calculates water quality indices (TSM and additional TSS algorithms) for Landsat 8 and 9.
+ * @param {ee.Image} image - Input image with SR_B2, SR_B3, SR_B4, and SR_B5 bands.
+ * @return {ee.Image} - Image with water quality bands added.
+ */
+function calculateLandsatWaterQuality(image) {
+  // Lymburner Total Suspended Matter (TSM) - Lymburner et al. 2016
+  // Units: mg/L concentration
+  var tsm_lymburner = image
+    .expression('3957 * pow(((SR_B3 + SR_B4) * 0.0001 / 2), 1.6436)', {
+      SR_B3: image.select('SR_B3'), // Green
+      SR_B4: image.select('SR_B4'), // Red
+    })
+    .rename('TSM_landsa_Lymburner')
+    .toFloat();
+
+  // (2) Suspended Particulate Model (SPM) - Zhongfeng Qiu et al. 2013
+  // Units: g/m^3 concentration
+  var spm_qiu = image
+    .expression(
+      'pow(10, 2.26 * pow(SR_B4 / SR_B3, 3) - 5.42 * pow(SR_B4 / SR_B3, 2) + 5.58 * (SR_B4 / SR_B3) - 0.72) - 1.43',
+      {
+        SR_B3: image.select('SR_B3'), // Green
+        SR_B4: image.select('SR_B4'), // Red
+      }
+    )
+    .rename('SPM_landsa_Qiu')
+    .toFloat();
+
+  // (3) Normalized Difference Suspended Sediment Index (NDSSI) - Hossain et al. 2010
+  // Unitless index
+  var ndssi_hossain = image
+    .normalizedDifference(['SR_B2', 'SR_B5'])
+    .rename('NDSSI_landsa_Hossain')
+    .toFloat();
+
+  // (4) Quang Total Suspended Solids (TSS) - Quang et al. 2017
+  // Units: mg/L concentration
+  var tss_quang = image
+    .expression('380.32 * SR_B4 * 0.0001 - 1.7826', {
+      SR_B4: image.select('SR_B4'), // Red
+    })
+    .rename('TSS_landsa_Quang')
+    .toFloat();
+
+  return image.addBands([
+    tsm_lymburner,
+    spm_qiu,
+    ndssi_hossain,
+    tss_quang
+  ]);
+}
+
+/**
+ * Masks clouds and non-water pixels in Sentinel-2 images using the SCL band.
+ * @param {ee.Image} image - Input Sentinel-2 image with SCL band.
+ * @return {ee.Image} - Image with invalid pixels masked out.
+ */
+function maskCloudsSentinel2(image) {
+  var scl = image.select('SCL');
+  // Valid classes: Vegetation(4), Bare Soil(5), Water(6), Cloud Shadow(7), Snow(11)
+  var validMask = scl.eq(4).or(scl.eq(5)).or(scl.eq(6)).or(scl.eq(7)).or(scl.eq(11));
+  return image.updateMask(validMask);
+}
+
+/**
+ * Calculates water quality indices for Sentinel-2 (Chl-a, Turbidity, TSM, CDOM, Cyanobacteria).
+ * @param {ee.Image} image - Input Sentinel-2 image with bands B1-B8A.
+ * @return {ee.Image} - Image with multiple water quality bands added.
+ */
+function calculateIndicesSentinel2(image) {
+  // Chl-a using Mishra 2012 algorithm
+  var chl_a_mishra = image
+    .expression(
+      '14.039 + 86.11 * ((B5 - B4) / (B5 + B4)) + 194.325 * pow(((B5 - B4) / (B5 + B4)), 2)',
+      {
+        B4: image.select('B4'), // Red (665 nm)
+        B5: image.select('B5'), // Red Edge 1 (705 nm)
+      }
+    )
+    .rename('Chl_a_S2_Mishra')
+    .toFloat();
+
+  // Chl-a for high concentrations (>5 mg/m³) - Soria-Perpinyà 2021
+  var chl_a_soria_high = image
+.expression('19.866 * pow(B5 / B4, 2.3051)', {
+  B4: image.select('B4'), // Red (665 nm)
+  B5: image.select('B5'), // Red Edge 1 (705 nm)
+})
+    .rename('Chl_a_S2_Soria_High')
+    .toFloat();
+
+  // Chl-a for low concentrations (<5 mg/m³) - Soria-Perpinyà 2021
+  var chl_a_soria_low = image
+.expression('pow(10, (-2.4792 * log10(max(B3, B2) / B3) - 0.0389))', {
+  B2: image.select('B2'), // Blue (492 nm)
+  B3: image.select('B3'), // Green (560 nm)
+})
+
+    .rename('Chl_a_S2_Soria_Low')
+    .toFloat();
+
+  // Turbidity calculation using Zhang et al. 2022
+  var turbidity_s2_zhang = image
+    .expression('194.79 * (B5 * (B5 / B2)) + 0.9061', {
+      B2: image.select('B2'), // Blue (492 nm)
+      B5: image.select('B5')  // Red Edge 1 (705 nm)
+    })
+    .rename('Turbidity_S2_Zhang')
+    .toFloat();
+
+  // Total Suspended Matter (TSM) using red edge-to-blue ratio - Soria-Perpinyà 2021
+  var tsm_s2 = image
+    .expression('14.464 * (B7 / B2) + 16.336', {
+      B2: image.select('B2'), // Blue (492 nm)
+      B7: image.select('B7'), // Red Edge 3 (783 nm)
+    })
+    .rename('TSM_S2_Soria')
+    .toFloat();
+
+  // Colored Dissolved Organic Matter (CDOM) using red-to-blue ratio - Soria-Perpinyà 2021
+  var cdom_s2 = image
+.expression('2.4072 * (B4 / B2) + 0.0709', {
+  B2: image.select('B2'), // Blue (492 nm)
+  B4: image.select('B4'), // Red (665 nm)
+})
+
+    .rename('CDOM_S2_Soria')
+    .toFloat();
+
+  // Cyanobacteria (Phycocyanin) using NIR-to-red ratio - Soria-Perpinyà 2021
+  var cyanobacteria_s2 = image
+.expression('21.554 * pow(B5 / B4, 3.4791)', {
+  B4: image.select('B4'), // Red (665 nm)
+  B5: image.select('B5'), // Red Edge 1 (705 nm)
+})
+
+    .rename('Cyanobacteria_S2_Soria')
+    .toFloat();
+
+  // --- New Sentinel-2 Relationships added based on Kravitz & Matthews (2020) ---
+  // (1) NDCI = [Rrs(705) - Rrs(665)] / [Rrs(705) + Rrs(665)]
+  // Using: B5 = Red Edge 1 (705 nm) and B4 = Red (665 nm)
+  var ndci_s2 = image
+    .expression('(B5 - B4) / (B5 + B4)', {
+      B4: image.select('B4'), // Red (665 nm)
+      B5: image.select('B5')  // Red Edge 1 (705 nm)
+    })
+    .rename('NDCI_S2_Kravitz')
+    .toFloat();
+
+  // (2) Chl-a = 17.441 * exp(4.7038 * NDCI)
+  // Reference: Kravitz, J & Matthews M., 2020. Chlorophyll-a for cyanobacteria blooms from Sentinel-2. CyanoLakes.
+  var chl_a_kravitz = image
+    .expression('17.441 * exp(4.7038 * ndci)', {
+      ndci: ndci_s2
+    })
+    .rename('Chl_a_S2_Kravitz')
+    .toFloat();
+
+  return image.addBands([
+    chl_a_mishra,
+    chl_a_soria_high,
+    chl_a_soria_low,
+    turbidity_s2_zhang,
+    tsm_s2,
+    cdom_s2,
+    cyanobacteria_s2,
+    ndci_s2,
+    chl_a_kravitz
+  ]);
+}
+
+/**
+ * Processes satellite data (Landsat and Sentinel-2) for a given month, including raw bands.
+ * @param {string} month - Month in 'YYYY-MM' format (e.g., '2019-01').
+ * @return {ee.Image} - Combined image with all indices and raw bands clipped to damPolygon.
+ */
+function processMonth(month) {
+  var startDate = month + '-01';
+  var endDate = ee.Date(startDate).advance(1, 'month');
+
+  // Landsat 8 and 9
+  var landsat8 = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2');
+  var landsat9 = ee.ImageCollection('LANDSAT/LC09/C02/T1_L2');
+  var landsatCollection = landsat8
+    .merge(landsat9)
+    .filterDate(startDate, endDate)
+    .filterBounds(damPolygon)
+    .map(applyScaleFactors)
+    .map(maskCloudsLandsat)
+    .map(calculateNDVI)
+    .map(calculateNDWI('Landsat'))
+    .map(calculateSST)
+    .map(calculateLandsatWaterQuality)
+    .mean()
+    .select([
+      'SR_B1', 'SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B6', 'SR_B7', 'ST_B10', // Raw bands
+      'LST_Landsat',
+      'NDVI_Landsat',
+      'NDWI_Landsat',
+      'TSM_landsa_Lymburner',
+      'SPM_landsa_Qiu',
+      'NDSSI_landsa_Hossain',
+      'TSS_landsa_Quang'
+    ])
+    .rename([
+      'SR_B1_Landsat', 'SR_B2_Landsat', 'SR_B3_Landsat', 'SR_B4_Landsat', 'SR_B5_Landsat', 'SR_B6_Landsat', 'SR_B7_Landsat', 'ST_B10_Landsat', // Renamed raw bands
+      'LST_Landsat',
+      'NDVI_Landsat',
+      'NDWI_Landsat',
+      'TSM_landsa_Lymburner',
+      'SPM_landsa_Qiu',
+      'NDSSI_landsa_Hossain',
+      'TSS_landsa_Quang'
+    ])
+    .toFloat();
+
+  // Sentinel-2
+  var sentinel2Collection = ee
+    .ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+    .filterDate(startDate, endDate)
+    .filterBounds(damPolygon)
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+    .map(maskCloudsSentinel2)
+    .map(calculateNDWI('Sentinel-2'))
+    .map(calculateIndicesSentinel2);
+
+  var sentinel2Size = sentinel2Collection.size();
+  print('Number of Sentinel-2 images for ' + month + ':', sentinel2Size);
+
+  var sentinel2Monthly = sentinel2Size.gt(0)
+    ? sentinel2Collection.mean().select([
+        'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12', // Raw bands
+        'NDWI_S2',
+        'Chl_a_S2_Mishra',
+        'Chl_a_S2_Soria_High',
+        'Chl_a_S2_Soria_Low',
+        'Turbidity_S2_Zhang',
+        'TSM_S2_Soria',
+        'CDOM_S2_Soria',
+        'Cyanobacteria_S2_Soria',
+        'NDCI_S2_Kravitz',
+        'Chl_a_S2_Kravitz'
+      ]).rename([
+        'B2_S2', 'B3_S2', 'B4_S2', 'B5_S2', 'B6_S2', 'B7_S2', 'B8_S2', 'B8A_S2', 'B9_S2', 'B11_S2', 'B12_S2', // Renamed raw bands
+        'NDWI_S2',
+        'Chl_a_S2_Mishra',
+        'Chl_a_S2_Soria_High',
+        'Chl_a_S2_Soria_Low',
+        'Turbidity_S2_Zhang',
+        'TSM_S2_Soria',
+        'CDOM_S2_Soria',
+        'Cyanobacteria_S2_Soria',
+        'NDCI_S2_Kravitz',
+        'Chl_a_S2_Kravitz'
+      ]).toFloat()
+    : ee.Image(0).rename('B2_S2').addBands(ee.Image(0).rename('B3_S2')).addBands(ee.Image(0).rename('B4_S2')).addBands(ee.Image(0).rename('B5_S2')).addBands(ee.Image(0).rename('B6_S2')).addBands(ee.Image(0).rename('B7_S2')).addBands(ee.Image(0).rename('B8_S2')).addBands(ee.Image(0).rename('B8A_S2')).addBands(ee.Image(0).rename('B9_S2')).addBands(ee.Image(0).rename('B11_S2')).addBands(ee.Image(0).rename('B12_S2')).addBands(ee.Image(0).rename('NDWI_S2')).addBands(ee.Image(0).rename('Chl_a_S2_Mishra')).addBands(ee.Image(0).rename('Chl_a_S2_Soria_High')).addBands(ee.Image(0).rename('Chl_a_S2_Soria_Low')).addBands(ee.Image(0).rename('Turbidity_S2_Zhang')).addBands(ee.Image(0).rename('TSM_S2_Soria')).addBands(ee.Image(0).rename('CDOM_S2_Soria')).addBands(ee.Image(0).rename('Cyanobacteria_S2_Soria')).addBands(ee.Image(0).rename('NDCI_S2_Kravitz')).addBands(ee.Image(0).rename('Chl_a_S2_Kravitz')).toFloat();
+
+  // Combine Landsat and Sentinel-2
+  var features = landsatCollection.addBands(sentinel2Monthly).toFloat();
+  var clippedData = features.clip(damPolygon);
+  return clippedData;
+}
+
+/**
+ * Generates a list of months between start and end dates (client-side).
+ * @param {number} startYear - Starting year.
+ * @param {number} startMonth - Starting month (1-12).
+ * @param {number} endYear - Ending year.
+ * @param {number} endMonth - Ending month (1-12).
+ * @return {Array<string>} - List of months in 'YYYY-MM' format.
+ */
+function generateMonths(startYear, startMonth, endYear, endMonth) {
+  var months = [];
+  for (var year = startYear; year <= endYear; year++) {
+    var monthStart = year === startYear ? startMonth : 1;
+    var monthEnd = year === endYear ? endMonth : 12;
+    for (var m = monthStart; m <= monthEnd; m++) {
+      var mm = m < 10 ? '0' + m : '' + m;
+      months.push(year + '-' + mm);
+    }
+  }
+  return months;
+}
+
+/**
+ * Processes and exports data for a specific month to Google Drive with selected bands.
+ * @param {string} month - Month in 'YYYY-MM' format.
+ * @param {Array<string>} selectedBands - List of band names to export.
+ */
+function processAndExport(month, selectedBands) {
+  var clippedData = processMonth(month);
+  var exportData = clippedData.select(selectedBands);
+
+  Export.image.toDrive({
+    image: exportData,
+    description: 'DamData_' + month,
+    folder: 'Dam_Data_Exports',
+    scale: 30, // 30m
+    region: damPolygon,
+    fileFormat: 'GeoTIFF',
+    maxPixels: 1e8,
+  });
+}
+
+// -------------- UI Components -------------- //
+
+// Years and months for dropdowns
+var years = [];
+for (var y = 2019; y <= 2025; y++) {
+  years.push(y.toString());
+}
+var monthNames = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12'];
+
+// Styles
+var PANEL_STYLE = {width: '320px', padding: '8px', backgroundColor: '#f9f9f915', position: 'top-left'};
+var SECTION_STYLE = {margin: '10px 0 0 0'};
+var LABEL_STYLE = {fontWeight: 'bold', fontSize: '14px'};
+var HELPER_TEXT_STYLE = {fontSize: '12px', color: '#666'};
+var BUTTON_STYLE = {margin: '5px 0', stretch: 'horizontal'};
+
+// ---- Date Range Panel ---- //
+var datePanel = ui.Panel({layout: ui.Panel.Layout.flow('vertical'), style: SECTION_STYLE});
+datePanel.add(ui.Label('Select Date Range for Processing', LABEL_STYLE));
+datePanel.add(ui.Label('Start Date:', HELPER_TEXT_STYLE));
+
+var startYearSelect = ui.Select({
+  items: years,
+  placeholder: 'Select start year',
+  onChange: updateMonths,
+  style: {width: '100%'},
+});
+datePanel.add(startYearSelect);
+
+var startMonthSelect = ui.Select({
+  items: monthNames,
+  placeholder: 'Select start month',
+  onChange: updateMonths,
+  style: {width: '100%'},
+});
+datePanel.add(startMonthSelect);
+
+datePanel.add(ui.Label('End Date:', HELPER_TEXT_STYLE));
+var endYearSelect = ui.Select({
+  items: years,
+  placeholder: 'Select end year',
+  onChange: updateMonths,
+  style: {width: '100%'},
+});
+datePanel.add(endYearSelect);
+
+var endMonthSelect = ui.Select({
+  items: monthNames,
+  placeholder: 'Select end month',
+  onChange: updateMonths,
+  style: {width: '100%'},
+});
+datePanel.add(endMonthSelect);
+
+// ---- Bands Selection Panel ---- //
+var exportBandsPanel = ui.Panel({layout: ui.Panel.Layout.flow('vertical'), style: SECTION_STYLE});
+exportBandsPanel.add(ui.Label('Select Bands to Export', LABEL_STYLE));
+var mainBands = [
+  'SR_B1_Landsat', 'SR_B2_Landsat', 'SR_B3_Landsat', 'SR_B4_Landsat', 'SR_B5_Landsat', 'SR_B6_Landsat', 'SR_B7_Landsat', 'ST_B10_Landsat',
+  'LST_Landsat',
+  'NDVI_Landsat',
+  'NDWI_Landsat',
+  'TSM_landsa_Lymburner',
+  'SPM_landsa_Qiu',
+  'NDSSI_landsa_Hossain',
+  'TSS_landsa_Quang',
+  'B2_S2', 'B3_S2', 'B4_S2', 'B5_S2', 'B6_S2', 'B7_S2', 'B8_S2', 'B8A_S2', 'B9_S2', 'B11_S2', 'B12_S2',
+  'Chl_a_S2_Mishra',
+  'Chl_a_S2_Soria_High',
+  'Chl_a_S2_Soria_Low',
+  'Turbidity_S2_Zhang',
+  'TSM_S2_Soria',
+  'CDOM_S2_Soria',
+  'Cyanobacteria_S2_Soria',
+  'NDWI_S2',
+  'NDCI_S2_Kravitz',
+  'Chl_a_S2_Kravitz'
+];
+var checkboxes = {};
+mainBands.forEach(function (band) {
+  var checkbox = ui.Checkbox(band, true);
+  checkboxes[band] = checkbox;
+  exportBandsPanel.add(checkbox);
+});
+
+// ---- Display Single Month/Layer Panel ---- //
+var displayPanel = ui.Panel({layout: ui.Panel.Layout.flow('vertical'), style: SECTION_STYLE});
+displayPanel.add(ui.Label('Display Data on Map', LABEL_STYLE));
+displayPanel.add(ui.Label('Month:', HELPER_TEXT_STYLE));
+
+var monthSelect = ui.Select({
+  placeholder: 'Select month to display',
+  style: {width: '100%'},
+});
+displayPanel.add(monthSelect);
+
+displayPanel.add(ui.Label('Band:', HELPER_TEXT_STYLE));
+var bandSelect = ui.Select({
+  items: mainBands,
+  placeholder: 'Select band to display',
+  style: {width: '100%'},
+});
+displayPanel.add(bandSelect);
+
+/**
+ * Returns visualization parameters (stretch + palette) for each band, including raw bands.
+ */
+function getVisParams(band) {
+  switch (band) {
+    // Raw Landsat bands
+    case 'SR_B1_Landsat':
+    case 'SR_B2_Landsat':
+    case 'SR_B3_Landsat':
+    case 'SR_B4_Landsat':
+    case 'SR_B5_Landsat':
+    case 'SR_B6_Landsat':
+    case 'SR_B7_Landsat':
+      return {min: 0, max: 0.3, palette: ['blue', 'green', 'red']};
+    case 'ST_B10_Landsat':
+      return {min: 15, max: 28, palette: ['blue', 'cyan', 'green', 'yellow', 'red']};
+    // Raw Sentinel-2 bands
+    case 'B2_S2':
+    case 'B3_S2':
+    case 'B4_S2':
+    case 'B5_S2':
+    case 'B6_S2':
+    case 'B7_S2':
+    case 'B8_S2':
+    case 'B8A_S2':
+    case 'B9_S2':
+    case 'B11_S2':
+    case 'B12_S2':
+      return {min: 0, max: 0.3, palette: ['blue', 'green', 'red']};
+    // Indices and other bands
+    case 'NDVI_Landsat':
+      return {min: 0, max: 0.5, palette: ['blue', 'cyan', 'white', 'green']};
+    case 'NDWI_Landsat':
+      return {min: -1, max: 1, palette: ['brown', 'white', 'blue']};
+    case 'LST_Landsat':
+      return {min: 15, max: 28, palette: ['blue', 'cyan', 'green', 'yellow', 'red']};
+    case 'Chl_a_S2_Mishra':
+    case 'Chl_a_S2_Soria_High':
+      return {min: 0, max: 50, palette: ['green', 'yellow', 'red']};
+    case 'Chl_a_S2_Soria_Low':
+      return {min: 0, max: 0.5, palette: ['blue', 'cyan', 'white', 'green']};
+    case 'Chl_a_S2_Kravitz':
+      return {min: 0, max: 50, palette: ['blue', 'white', 'green']};
+    case 'Turbidity_S2_Zhang':
+      return {min: 62415.57, max: 3058147.17, palette: ['blue', 'green', 'yellow', 'red']};
+    case 'TSM_S2_Soria':
+      return {min: 0, max: 100, palette: ['blue', 'green', 'yellow', 'red']};
+    case 'CDOM_S2_Soria':
+      return {min: 0, max: 10, palette: ['purple', 'blue', 'green', 'yellow', 'red']};
+    case 'Cyanobacteria_S2_Soria':
+      return {min: 0, max: 100, palette: ['green', 'yellow', 'red']};
+    case 'TSM_landsa_Lymburner':
+      return {min: -0.0000173899898, max: 0.00009877067124, palette: ['blue', 'green', 'yellow', 'red']};
+    case 'SPM_landsa_Qiu':
+      return {min: 50, max: 150, palette: ['blue', 'green', 'yellow', 'red']};
+    case 'TSS_landsa_Quang':
+      return {min: -1.78138, max: -1.76892, palette: ['blue', 'green', 'yellow', 'red']};
+    case 'NDSSI_landsa_Hossain':
+      return {min: -1, max: 1, palette: ['red', 'white', 'blue']};
+    case 'NDWI_S2':
+      return {min: -1, max: 1, palette: ['brown', 'white', 'blue']};
+    default:
+      return {min: 0, max: 1, palette: ['blue', 'green', 'red']};
+  }
+}
+
+// Button to display a single month/band
+var displayButton = ui.Button({
+  label: 'Display on Map',
+  onClick: function () {
+    var month = monthSelect.getValue();
+    var band = bandSelect.getValue();
+    if (!month || !band) {
+      ui.root.widgets().get(0).add(ui.Label('Please select both a month and a band.', {color: 'red'}));
+      return;
+    }
+    var clippedData = processMonth(month);
+    var visParams = getVisParams(band);
+    Map.addLayer(clippedData.select(band), visParams, 'Data ' + month + ' - ' + band);
+  },
+  style: BUTTON_STYLE,
+});
+
+// Button to export data for all months in the selected range
+var exportButton = ui.Button({
+  label: 'Export to Drive',
+  onClick: function () {
+    var startYear = parseInt(startYearSelect.getValue());
+    var startMonth = parseInt(startMonthSelect.getValue());
+    var endYear = parseInt(endYearSelect.getValue());
+    var endMonth = parseInt(endMonthSelect.getValue());
+    if (!startYear || !startMonth || !endYear || !endMonth) {
+      ui.root.widgets().get(0).add(ui.Label('Please select start and end dates.', {color: 'red'}));
+      return;
+    }
+    var months = generateMonths(startYear, startMonth, endYear, endMonth);
+
+    var selectedBands = [];
+    Object.keys(checkboxes).forEach(function (band) {
+      if (checkboxes[band].getValue()) {
+        selectedBands.push(band);
+      }
+    });
+    if (selectedBands.length === 0) {
+      ui.root.widgets().get(0).add(ui.Label('Please select at least one band to export.', {color: 'red'}));
+      return;
+    }
+
+    months.forEach(function (month) {
+      processAndExport(month, selectedBands);
+    });
+  },
+  style: BUTTON_STYLE,
+});
+
+// Update the list of months in the "Display Data on Map" dropdown based on date range
+function updateMonths() {
+  var startYear = startYearSelect.getValue();
+  var startMonth = startMonthSelect.getValue();
+  var endYear = endYearSelect.getValue();
+  var endMonth = endMonthSelect.getValue();
+  if (startYear && startMonth && endYear && endMonth) {
+    var months = generateMonths(parseInt(startYear), parseInt(startMonth), parseInt(endYear), parseInt(endMonth));
+    monthSelect.items().reset(months);
+  }
+}
+
+// Default date selection
+startYearSelect.setValue('2019');
+startMonthSelect.setValue('01');
+endYearSelect.setValue('2019');
+endMonthSelect.setValue('01');
+updateMonths();
+
+// Build the main left-side UI panel
+var mainPanel = ui.Panel({
+  layout: ui.Panel.Layout.flow('vertical'),
+  style: PANEL_STYLE,
+});
+mainPanel.add(
+  ui.Label('Dam Data Processing Toolkit', {fontWeight: 'bold', fontSize: '18px', margin: '0 0 10px 0'})
+);
+mainPanel.add(datePanel);
+mainPanel.add(exportBandsPanel);
+mainPanel.add(displayPanel);
+mainPanel.add(displayButton);
+mainPanel.add(exportButton);
+
+// ---- Time Series Panel (New Section) ---- //
+var timeSeriesPanel = ui.Panel({
+  layout: ui.Panel.Layout.flow('vertical'),
+  style: SECTION_STYLE,
+});
+timeSeriesPanel.add(ui.Label('Monthly Time Series', LABEL_STYLE));
+
+// Dropdown for band selection in time series
+var bandSelectTS = ui.Select({
+  items: mainBands,
+  placeholder: 'Select band for time-series',
+  style: {width: '100%'},
+});
+timeSeriesPanel.add(bandSelectTS);
+
+/**
+ * Creates and displays a monthly time-series chart for the selected band from 2020 to current year.
+ * It computes the mean value of the chosen band over the damPolygon for each month.
+ */
+function createTimeSeriesChart() {
+  // Ensure a band is selected
+  var band = bandSelectTS.getValue();
+  if (!band) {
+    timeSeriesPanel.add(ui.Label('Please select a band for the time-series.', {color: 'red'}));
+    return;
+  }
+
+  // Define start (2020-01) and end (this example uses 2025-12, or adjust as needed).
+  var startYear = 2020;
+  var startMonth = 1;
+  var now = ee.Date(Date.now()); // Earth Engine server time
+  var currentYear = now.get('year').getInfo();
+  var currentMonth = now.get('month').getInfo();
+
+  // Generate months
+  var monthsList = generateMonths(startYear, startMonth, currentYear, currentMonth);
+
+  // Build a FeatureCollection of monthly mean values
+  var timeSeriesFC = ee.FeatureCollection(
+    monthsList.map(function (month) {
+      var image = processMonth(month).select(band);
+      var meanDict = image.reduceRegion({
+        reducer: ee.Reducer.mean(),
+        geometry: damPolygon,
+        scale: 30,
+        bestEffort: true,
+      });
+      return ee.Feature(null, {
+        month: month,
+        value: meanDict.get(band),
+      });
+    })
+  );
+
+  // Create a Chart: Feature by Feature
+  var chart = ui.Chart.feature
+    .byFeature(timeSeriesFC, 'month', ['value'])
+    .setChartType('LineChart')
+    .setOptions({
+      title: 'Time Series of ' + band + ' (Monthly Avg) from 2020 to Present',
+      legend: {position: 'none'},
+      hAxis: {title: 'Month'},
+      vAxis: {title: band},
+      interpolateNulls: true,
+      pointSize: 4,
+    });
+
+  // Add or replace chart in the timeSeriesPanel
+  if (timeSeriesPanel.widgets().length() > 2) {
+    timeSeriesPanel.widgets().set(2, chart);
+  } else {
+    timeSeriesPanel.add(chart);
+  }
+}
+
+// Button to trigger the time-series creation
+var timeSeriesButton = ui.Button({
+  label: 'Generate Time Series',
+  onClick: createTimeSeriesChart,
+  style: BUTTON_STYLE,
+});
+timeSeriesPanel.add(timeSeriesButton);
+
+// Add the time-series panel to the main panel
+mainPanel.add(timeSeriesPanel);
+
+// Add the panel to the UI and center map on the polygon
+ui.root.widgets().add(mainPanel);
+Map.centerObject(damPolygon, 15);
