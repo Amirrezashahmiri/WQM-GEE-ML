@@ -1,0 +1,486 @@
+/********************************************
+ * Interactive Google Earth Engine Script for
+ * Point-Based Satellite Data Processing with Time Range
+ ********************************************/
+
+// IMPORTANT: Ensure that 'damPolygon' is defined globally before running the code.
+// Example: var damPolygon = ee.Geometry.Polygon([...]);
+
+// Define raw bands for Landsat and Sentinel-2 to be renamed during extraction
+var landsatRawBands = ['SR_B1', 'SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B6', 'SR_B7', 'ST_B10'];
+var sentinel2RawBands = ['B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12'];
+
+// UI Components
+var panel = ui.Panel({
+  layout: ui.Panel.Layout.flow('vertical'),
+  style: {width: '350px', padding: '10px', border: '1px solid #ccc', backgroundColor: '#f9f9f9'}
+});
+
+panel.add(ui.Label('Interactive Satellite Data Processor', {fontWeight: 'bold', fontSize: '18px'}));
+
+// Section for Points Input
+panel.add(ui.Label('Enter Points (one per line, format: lat,lon)', {fontWeight: 'bold'}));
+panel.add(ui.Label('Example: 23.079939,58.845677'));
+var pointsInput = ui.Textbox({
+  placeholder: 'Enter points here...',
+  style: {width: '100%', height: '100px'}
+});
+panel.add(pointsInput);
+
+// Section for Specific Dates Input
+panel.add(ui.Label('Enter Specific Dates (one per line, format: MM/DD/YYYY HH:MM)', {fontWeight: 'bold'}));
+panel.add(ui.Label('Example: 1/15/2022 11:30'));
+var datesInput = ui.Textbox({
+  placeholder: 'Enter specific dates here...',
+  style: {width: '100%', height: '100px'}
+});
+panel.add(datesInput);
+
+// Section for Time Window Input
+panel.add(ui.Label('Enter Time Window (in hours)', {fontWeight: 'bold'}));
+panel.add(ui.Label('Example: 4'));
+var timeWindowInput = ui.Textbox({
+  placeholder: 'Enter time window...',
+  style: {width: '100%'}
+});
+panel.add(timeWindowInput);
+
+// Section for Time Range Input
+panel.add(ui.Label('Enter Time Range for Available Images', {fontWeight: 'bold'}));
+panel.add(ui.Label('Start Date (format: YYYY-MM-DD, e.g., 2022-01-01)'));
+var startDateInput = ui.Textbox({
+  placeholder: 'YYYY-MM-DD',
+  style: {width: '100%'}
+});
+panel.add(startDateInput);
+panel.add(ui.Label('End Date (format: YYYY-MM-DD, e.g., 2022-12-31)'));
+var endDateInput = ui.Textbox({
+  placeholder: 'YYYY-MM-DD',
+  style: {width: '100%'}
+});
+panel.add(endDateInput);
+
+// Buttons
+var processSpecificButton = ui.Button('Process Specific Dates', function() {
+  processSpecificDates();
+}, false, {margin: '10px 0'});
+panel.add(processSpecificButton);
+
+var processTimeRangeButton = ui.Button('Get Available Dates in Time Range', function() {
+  processTimeRange();
+}, false, {margin: '10px 0'});
+panel.add(processTimeRangeButton);
+
+// Function to process specific dates
+function processSpecificDates() {
+  var pointsList = parsePoints(pointsInput.getValue());
+  var datesList = parseDates(datesInput.getValue());
+  var timeWindow = parseFloat(timeWindowInput.getValue());
+  
+  if (!pointsList.length || !datesList.length || isNaN(timeWindow)) {
+    showError('Please provide valid inputs for points, dates, and time window.');
+    return;
+  }
+  
+  var points = ee.FeatureCollection(pointsList.map(function(point) {
+    return ee.Feature(ee.Geometry.Point([point.lon, point.lat]))
+      .set('latitude', point.lat)
+      .set('longitude', point.lon);
+  }));
+  
+  var specificDates = datesList.map(function(dateStr) {
+    return parseDate(dateStr);
+  });
+  
+  var allLandsatFeatures = ee.FeatureCollection([]);
+  var allSentinel2Features = ee.FeatureCollection([]);
+  
+  specificDates.forEach(function(date) {
+    var startDate = date.advance(-timeWindow, 'hour');
+    var endDate = date.advance(timeWindow, 'hour');
+    var insituDateStr = date.format('YYYY-MM-dd HH:mm').getInfo();
+    
+    // Process Landsat data
+    var landsatData = processLandsat(startDate, endDate, points, insituDateStr);
+    if (landsatData.size().getInfo() === 0) {
+      showError('No Landsat data available for date: ' + insituDateStr);
+      return;
+    }
+    var landsatFeatures = extractParameters(
+      landsatData,
+      [
+        'SR_B1', 'SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B6', 'SR_B7', 'ST_B10',
+        'LST_Landsat', 'NDVI_Landsat', 'NDWI_Landsat', 
+        'TSM_landsa_Lymburner', 'SPM_landsa_Qiu', 'NDSSI_landsa_Hossain', 'TSS_landsa_Quang'
+      ],
+      landsatRawBands,
+      'Landsat',
+      'Landsat',
+      points,
+      30
+    );
+    allLandsatFeatures = allLandsatFeatures.merge(landsatFeatures);
+    
+    // Process Sentinel-2 data
+    var sentinel2Data = processSentinel2(startDate, endDate, points, insituDateStr);
+    if (sentinel2Data.size().getInfo() === 0) {
+      showError('No Sentinel-2 data available for date: ' + insituDateStr);
+      return;
+    }
+    var sentinel2Features = extractParameters(
+      sentinel2Data,
+      [
+        'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12',
+        'NDWI_S2', 'Chl_a_S2_Mishra', 'Chl_a_S2_Soria_High', 'Chl_a_S2_Soria_Low', 
+        'Turbidity_S2_Zhang', 'TSM_S2_Soria', 'CDOM_S2_Soria', 'Cyanobacteria_S2_Soria', 
+        'NDCI_S2_Kravitz', 'Chl_a_S2_Kravitz'
+      ],
+      sentinel2RawBands,
+      'S2',
+      'Sentinel-2',
+      points,
+      10
+    );
+    allSentinel2Features = allSentinel2Features.merge(sentinel2Features);
+  });
+  
+  // Export Landsat data to CSV
+  Export.table.toDrive({
+    collection: allLandsatFeatures,
+    description: 'Landsat_Dam_Parameters',
+    folder: 'Dam_Data_Exports',
+    fileFormat: 'CSV',
+    selectors: [
+      'latitude', 'longitude', 'product', 'insitu_date', 'product_date',
+      'SR_B1_Landsat', 'SR_B2_Landsat', 'SR_B3_Landsat', 'SR_B4_Landsat', 
+      'SR_B5_Landsat', 'SR_B6_Landsat', 'SR_B7_Landsat', 'ST_B10_Landsat',
+      'LST_Landsat', 'NDVI_Landsat', 'NDWI_Landsat', 
+      'TSM_landsa_Lymburner', 'SPM_landsa_Qiu', 'NDSSI_landsa_Hossain', 'TSS_landsa_Quang'
+    ]
+  });
+  
+  // Export Sentinel-2 data to CSV
+  Export.table.toDrive({
+    collection: allSentinel2Features,
+    description: 'Sentinel2_Dam_Parameters',
+    folder: 'Dam_Data_Exports',
+    fileFormat: 'CSV',
+    selectors: [
+      'latitude', 'longitude', 'product', 'insitu_date', 'product_date',
+      'B2_S2', 'B3_S2', 'B4_S2', 'B5_S2', 'B6_S2', 'B7_S2', 'B8_S2', 'B8A_S2', 
+      'B9_S2', 'B11_S2', 'B12_S2',
+      'NDWI_S2', 'Chl_a_S2_Mishra', 'Chl_a_S2_Soria_High', 'Chl_a_S2_Soria_Low', 
+      'Turbidity_S2_Zhang', 'TSM_S2_Soria', 'CDOM_S2_Soria', 'Cyanobacteria_S2_Soria', 
+      'NDCI_S2_Kravitz', 'Chl_a_S2_Kravitz'
+    ]
+  });
+  
+  showMessage('Processing started for specific dates. Check the Tasks tab.');
+}
+
+// Function to process time range and get available dates
+function processTimeRange() {
+  var pointsList = parsePoints(pointsInput.getValue());
+  var startDateStr = startDateInput.getValue();
+  var endDateStr = endDateInput.getValue();
+  
+  if (!pointsList.length || !startDateStr || !endDateStr) {
+    showError('Please provide points and a valid time range.');
+    return;
+  }
+  
+  var points = ee.FeatureCollection(pointsList.map(function(point) {
+    return ee.Feature(ee.Geometry.Point([point.lon, point.lat]))
+      .set('latitude', point.lat)
+      .set('longitude', point.lon);
+  }));
+  
+  var startDate = ee.Date(startDateStr);
+  var endDate = ee.Date(endDateStr);
+  
+  // Get available dates for Landsat
+  var landsatCollection = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
+    .merge(ee.ImageCollection('LANDSAT/LC09/C02/T1_L2'))
+    .filterDate(startDate, endDate)
+    .filterBounds(damPolygon);
+  var landsatDates = landsatCollection.map(function(image) {
+    return ee.Feature(null, {
+      'date': image.date().format('YYYY-MM-dd'),
+      'satellite': 'Landsat'
+    });
+  });
+  
+  // Get available dates for Sentinel-2
+  var sentinel2Collection = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+    .filterDate(startDate, endDate)
+    .filterBounds(damPolygon)
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20));
+  var sentinel2Dates = sentinel2Collection.map(function(image) {
+    return ee.Feature(null, {
+      'date': image.date().format('YYYY-MM-dd'),
+      'satellite': 'Sentinel-2'
+    });
+  });
+  
+  // Export Landsat dates to CSV
+  Export.table.toDrive({
+    collection: landsatDates,
+    description: 'Landsat_Available_Dates_' + startDateStr + '_to_' + endDateStr,
+    folder: 'Dam_Data_Exports',
+    fileFormat: 'CSV',
+    selectors: ['date', 'satellite']
+  });
+  
+  // Export Sentinel-2 dates to CSV
+  Export.table.toDrive({
+    collection: sentinel2Dates,
+    description: 'Sentinel2_Available_Dates_' + startDateStr + '_to_' + endDateStr,
+    folder: 'Dam_Data_Exports',
+    fileFormat: 'CSV',
+    selectors: ['date', 'satellite']
+  });
+  
+  showMessage('Available dates exported for Landsat and Sentinel-2. Check the Tasks tab.');
+}
+
+// Helper functions
+function parsePoints(input) {
+  var lines = input.split('\n');
+  return lines.map(function(line) {
+    var parts = line.split(',');
+    if (parts.length === 2) {
+      return {lat: parseFloat(parts[0].trim()), lon: parseFloat(parts[1].trim())};
+    }
+    return null;
+  }).filter(function(point) { return point !== null; });
+}
+
+function parseDates(input) {
+  var lines = input.split('\n');
+  return lines.map(function(line) {
+    return line.trim();
+  }).filter(function(dateStr) { return dateStr !== ''; });
+}
+
+function parseDate(dateStr) {
+  var dateParts = dateStr.split(' ');
+  var date = dateParts[0];
+  var time = dateParts[1];
+  var dateComponents = date.split('/');
+  var month = parseInt(dateComponents[0], 10);
+  var day = parseInt(dateComponents[1], 10);
+  var year = parseInt(dateComponents[2], 10);
+  var timeComponents = time.split(':');
+  var hour = parseInt(timeComponents[0], 10);
+  var minute = parseInt(timeComponents[1], 10);
+  return ee.Date.fromYMD(year, month, day).advance(hour, 'hour').advance(minute, 'minute');
+}
+
+function showError(message) {
+  var errorLabel = ui.Label(message, {color: 'red'});
+  panel.add(errorLabel);
+  setTimeout(function() {
+    panel.remove(errorLabel);
+  }, 5000);
+}
+
+function showMessage(message) {
+  var messageLabel = ui.Label(message, {color: 'green'});
+  panel.add(messageLabel);
+  setTimeout(function() {
+    panel.remove(messageLabel);
+  }, 5000);
+}
+
+// Existing Landsat and Sentinel-2 processing functions from your original code
+function applyScaleFactors(image) {
+  var opticalBands = image.select('SR_B.').multiply(0.0000275).add(-0.2);
+  var thermalBand = image.select('ST_B10').multiply(0.00341802).add(149.0).subtract(273.15);
+  return image.addBands(opticalBands, null, true)
+              .addBands(thermalBand, null, true);
+}
+
+function maskCloudsLandsat(image) {
+  var qa = image.select('QA_PIXEL');
+  var cloudShadowBitmask = 1 << 4;
+  var cloudBitmask = 1 << 3;
+  var cirrusBitmask = 1 << 2;
+  var mask = qa.bitwiseAnd(cloudShadowBitmask).eq(0)
+               .and(qa.bitwiseAnd(cloudBitmask).eq(0))
+               .and(qa.bitwiseAnd(cirrusBitmask).eq(0));
+  return image.updateMask(mask);
+}
+
+function calculateNDVI(image) {
+  var ndvi = image.normalizedDifference(['SR_B5', 'SR_B4']).rename('NDVI_Landsat').toFloat();
+  return image.addBands(ndvi);
+}
+
+function calculateNDWI(sensor) {
+  return function(image) {
+    var ndwi;
+    if (sensor === 'Landsat') {
+      ndwi = image.normalizedDifference(['SR_B3', 'SR_B5']).rename('NDWI_Landsat').toFloat();
+    } else if (sensor === 'Sentinel-2') {
+      ndwi = image.normalizedDifference(['B3', 'B8']).rename('NDWI_S2').toFloat();
+    }
+    return image.addBands(ndwi);
+  };
+}
+
+function calculateSST(image) {
+  var sst = image.select('ST_B10').multiply(0.7).rename('LST_Landsat').toFloat();
+  return image.addBands(sst);
+}
+
+function calculateLandsatWaterQuality(image) {
+  var tsm_lymburner = image.expression('3957 * pow(((SR_B3 + SR_B4) * 0.0001 / 2), 1.6436)', {
+    'SR_B3': image.select('SR_B3'),
+    'SR_B4': image.select('SR_B4')
+  }).rename('TSM_landsa_Lymburner').toFloat();
+
+  var spm_qiu = image.expression(
+    'pow(10, 2.26 * pow(SR_B4 / SR_B3, 3) - 5.42 * pow(SR_B4 / SR_B3, 2) + 5.58 * (SR_B4 / SR_B3) - 0.72) - 1.43',
+    {
+      'SR_B3': image.select('SR_B3'),
+      'SR_B4': image.select('SR_B4')
+    }
+  ).rename('SPM_landsa_Qiu').toFloat();
+
+  var ndssi_hossain = image.normalizedDifference(['SR_B2', 'SR_B5']).rename('NDSSI_landsa_Hossain').toFloat();
+
+  var tss_quang = image.expression('380.32 * SR_B4 * 0.0001 - 1.7826', {
+    'SR_B4': image.select('SR_B4')
+  }).rename('TSS_landsa_Quang').toFloat();
+
+  return image.addBands([tsm_lymburner, spm_qiu, ndssi_hossain, tss_quang]);
+}
+
+function maskCloudsSentinel2(image) {
+  var scl = image.select('SCL');
+  var validMask = scl.eq(4).or(scl.eq(5)).or(scl.eq(6)).or(scl.eq(7)).or(scl.eq(11));
+  return image.updateMask(validMask);
+}
+
+function calculateIndicesSentinel2(image) {
+  var chl_a_mishra = image.expression(
+    '14.039 + 86.11 * ((B5 - B4) / (B5 + B4)) + 194.325 * pow(((B5 - B4) / (B5 + B4)), 2)', {
+      'B4': image.select('B4'),
+      'B5': image.select('B5')
+    }).rename('Chl_a_S2_Mishra').toFloat();
+
+  var chl_a_soria_high = image.expression(
+    '19.866 * pow(((B5 / B4) * (B4 / B3)), 0.051)', {
+      'B3': image.select('B3'),
+      'B4': image.select('B4'),
+      'B5': image.select('B5')
+    }).rename('Chl_a_S2_Soria_High').toFloat();
+
+  var chl_a_soria_low = image.expression(
+    'exp(10 * (-2.4792 * log10((max(B3, B2) / B2)) - 0.0389))', {
+      'B2': image.select('B2'),
+      'B3': image.select('B3')
+    }).rename('Chl_a_S2_Soria_Low').toFloat();
+
+  var turbidity_s2_zhang = image.expression('194.79 * (B5 * (B5 / B2)) + 0.9061', {
+    'B2': image.select('B2'),
+    'B5': image.select('B5')
+  }).rename('Turbidity_S2_Zhang').toFloat();
+
+  var tsm_s2 = image.expression('14.464 * (B7 / B2) + 16.336', {
+    'B2': image.select('B2'),
+    'B7': image.select('B7')
+  }).rename('TSM_S2_Soria').toFloat();
+
+  var cdom_s2 = image.expression('2.4072 * pow(B4 / B2, 2) + 0.0709', {
+    'B2': image.select('B2'),
+    'B4': image.select('B4')
+  }).rename('CDOM_S2_Soria').toFloat();
+
+  var cyanobacteria_s2 = image.expression('21.554 * pow(B8A / B4, 3.4791)', {
+    'B4': image.select('B4'),
+    'B8A': image.select('B8A')
+  }).rename('Cyanobacteria_S2_Soria').toFloat();
+
+  var ndci_s2 = image.expression('(B5 - B4) / (B5 + B4)', {
+    'B4': image.select('B4'),
+    'B5': image.select('B5')
+  }).rename('NDCI_S2_Kravitz').toFloat();
+
+  var chl_a_kravitz = image.expression('17.441 * exp(4.7038 * ndci)', {
+    'ndci': ndci_s2
+  }).rename('Chl_a_S2_Kravitz').toFloat();
+
+  return image.addBands([
+    chl_a_mishra,
+    chl_a_soria_high,
+    chl_a_soria_low,
+    turbidity_s2_zhang,
+    tsm_s2,
+    cdom_s2,
+    cyanobacteria_s2,
+    ndci_s2,
+    chl_a_kravitz
+  ]);
+}
+
+function processLandsat(startDate, endDate, points, insituDate) {
+  var landsat8 = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2');
+  var landsat9 = ee.ImageCollection('LANDSAT/LC09/C02/T1_L2');
+  var landsatCollection = landsat8.merge(landsat9)
+    .filterDate(startDate, endDate)
+    .filterBounds(damPolygon);
+  var processedLandsat = landsatCollection
+    .map(applyScaleFactors)
+    .map(maskCloudsLandsat)
+    .map(calculateNDVI)
+    .map(calculateNDWI('Landsat'))
+    .map(calculateSST)
+    .map(calculateLandsatWaterQuality);
+  return processedLandsat.map(function(image) {
+    return image.set('insitu_date', insituDate);
+  });
+}
+
+function processSentinel2(startDate, endDate, points, insituDate) {
+  var sentinel2Collection = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+    .filterDate(startDate, endDate)
+    .filterBounds(damPolygon)
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+    .map(maskCloudsSentinel2)
+    .map(calculateNDWI('Sentinel-2'))
+    .map(calculateIndicesSentinel2);
+  return sentinel2Collection.map(function(image) {
+    return image.set('insitu_date', insituDate);
+  });
+}
+
+function extractParameters(imageCollection, allBands, rawBands, suffix, productName, points, scale) {
+  var features = imageCollection.map(function(image) {
+    var insituDate = image.get('insitu_date');
+    var productDate = image.date().format('YYYY-MM-dd HH:mm');
+    var renamedRawBands = rawBands.map(function(band) {
+      return band + '_' + suffix;
+    });
+    var indices = ee.List(allBands).removeAll(rawBands);
+    var renamedRaw = image.select(rawBands).rename(renamedRawBands);
+    var indicesImage = image.select(indices);
+    var finalImage = renamedRaw.addBands(indicesImage);
+    var sampled = finalImage.sampleRegions({
+      collection: points,
+      scale: scale,
+      geometries: true
+    });
+    return sampled.map(function(feature) {
+      return feature.set({
+        'product': productName,
+        'insitu_date': insituDate,
+        'product_date': productDate
+      });
+    });
+  }).flatten();
+  return features;
+}
+
+// Add panel to UI
+ui.root.add(panel);
