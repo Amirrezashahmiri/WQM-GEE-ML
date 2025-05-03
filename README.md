@@ -1,36 +1,85 @@
-# GEE_Toolkit
-A Google Earth Engine Toolkit and Machine Learning Framework for Monitoring Reservoir Water Quality Using Satellite Imagery and In Situ Data 
+````markdown
+# GEE Toolkit for Reservoir Water Quality Monitoring
 
-This repository contains:
+An open-source, no-code Google Earth Engine toolkit paired with a Python ML pipeline for end-to-end reservoir water quality assessment.
 
-A no-code Google Earth Engine (GEE) toolkit for computing and visualizing water-quality indices.
+## Features
 
-A Python machine learning pipeline for local calibration and prediction of chlorophyll‑a, turbidity, and water surface temperature (WST).
+- **No-code GEE interface**: Atmospheric correction, cloud masking, and pixel‑wise time-series extraction.
+- **Empirical indices**: Compute NDVI, NDWI, LST, TSM, SPM, NDSSI, TSS, Chl‑a, turbidity, CDOM, and cyanobacteria without coding.
+- **Point-based extraction**: Align in situ CTD measurements with Landsat 8/9 & Sentinel‑2 pixels for local calibration.
+- **Python ML pipeline**: Feature selection (RFE, SelectKBest), RandomizedSearchCV tuning, and ensemble models (RF, XGBoost, CatBoost, MLP, stacking, voting).
+- **Proven performance**: Achieves R² of 0.70–0.84 for chlorophyll‑a, turbidity, and water surface temperature (WST).
 
-The toolkit automates:
+## Getting Started
 
-Atmospheric correction and cloud masking of Landsat 8/9 & Sentinel‑2 imagery
+### Prerequisites
 
-Pixel-wise time-series extraction and regional clipping
+- Python 3.7+
+- [Google Earth Engine Python API](https://developers.google.com/earth-engine/python_install)
+- Git
 
-Export of GeoTIFF composites to Google Drive
+### Installation
 
-The ML pipeline provides:
+```bash
+# Clone the repo
+git clone https://github.com/<your-username>/GEE_Toolkit.git
+cd GEE_Toolkit
 
-Point-based extraction of in situ CTD measurements aligned with satellite pixels
+# Setup Python environment
+python3 -m venv venv
+source venv/bin/activate
 
-Feature selection (RFE, SelectKBest) and hyperparameter tuning via RandomizedSearchCV
+# Install dependencies
+pip install -r ml_pipeline/requirements.txt
+````
 
-Ensemble modeling (Random Forest, XGBoost, CatBoost, MLP, stacking, voting)
+## Usage
 
-Highlights
+### 1. Launch the GEE Toolkit UI
 
-No-code GEE toolkit integrates satellite and in situ data for water quality models.
+```bash
+cd gee_toolkit
+python3 -m http.server 8000
+```
 
-Automates atmospheric correction, cloud masking, and time-series extraction.
+Open your browser at `http://localhost:8000`, select your region, date range, and indices, then export composites to Google Drive.
 
-Compute empirical indices (NDVI, NDWI, LST, TSM, SPM, Chl‑a, turbidity, CDOM) in GEE.
+### 2. Run the Python ML Pipeline
 
-Point-based extraction aligns CTD data with Landsat 8/9 & Sentinel-2 pixels.
+```bash
+cd ml_pipeline
+python run_pipeline.py \
+  --ctd ../data/ctd_samples.csv \
+  --satellite ../data/satellite_features.csv \
+  --output ../results/model_performance.csv
+```
 
-ML models achieved R² of 0.70–0.84 for chlorophyll‑a, turbidity, and WST.
+Outputs include model metrics (R², MAE, MSE, MAPE) and feature importance summaries.
+
+## Repository Structure
+
+```
+GEE_Toolkit/
+├── gee_toolkit/          # No-code GEE UI and scripts
+├── ml_pipeline/          # Python scripts for data merging & ML
+├── data/                 # Sample CTD and satellite export files
+├── results/              # Model performance outputs
+├── notebooks/            # Jupyter notebooks for demos
+└── README.md             # Project overview and instructions
+```
+
+## Contributing
+
+Feel free to open issues or submit pull requests for enhancements and bug fixes.
+
+## License
+
+This project is licensed under the MIT License.
+
+---
+
+*Developed by Amirreza Shahmiri*
+
+```
+```
