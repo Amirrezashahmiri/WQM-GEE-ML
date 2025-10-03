@@ -7,6 +7,15 @@ This repository contains:
 * A **no-code Google Earth Engine (GEE) toolkit** for computing and visualizing water-quality indices.
 * A **Python machine learning pipeline** for local calibration and prediction of chlorophyll‑a, turbidity, and water surface temperature (WST).
 
+# APA Citation for Underlying Work:
+# Yavari, Z., Shahmiri, A., & Nikoo, M. R. (n.d.). Research in Environmental Modelling and Software.
+# Affiliations:
+# 1. Assistant Professor, Department of Civil and Architectural Engineering, College of Engineering, Sultan Qaboos University, Muscat, Oman. Email: z.yavari@squ.edu.om
+# 2. Research Assistant, Department of Civil and Architectural Engineering, College of Engineering, Sultan Qaboos University, Muscat, Oman. Email: amirreza.shahmiri@gmail.com
+# 3. Associate Professor, Department of Civil and Architectural Engineering, College of Engineering, Sultan Qaboos University, P.O. Box 33, Al-Khod 123, Muscat, Oman. Email: m.reza@squ.edu.om
+#
+# Note: This code and toolkit is based on/related to work reviewed under the authors listed above.
+
 The toolkit automates:
 
 * Atmospheric correction and cloud masking of Landsat 8/9 & Sentinel‑2 imagery
