@@ -7,6 +7,11 @@ This repository contains:
 * A **no-code Google Earth Engine (GEE) toolkit** for computing and visualizing water-quality indices.
 * A **Python machine learning pipeline** for local calibration and prediction of chlorophyll‑a, turbidity, and water surface temperature (WST).
 
+> **Citation**  
+> This work is currently under review in *Environmental Modelling & Software*.  
+> If you use this toolkit or pipeline, please cite as follows:  
+>
+> Yavari, Z., Shahmiri, A. R., & Nikoo, M. R. (2025). *A Google Earth Engine toolkit for reservoir water quality monitoring*. Manuscript submitted for publication in *Environmental Modelling & Software*.
 
 The toolkit automates:
 
